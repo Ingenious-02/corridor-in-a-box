@@ -916,3 +916,66 @@ export {
   type OpenedTxCheckOptions,
   type ReportedTransactionFields,
 } from "./openedTxCheck";
+export interface ReceiverKycAdapterLike {
+  ensureCompliance(intent: PaymentIntent, corridor: Corridor): Promise<Outcome<KycResult>>;
+  readonly name?: string;
+}
+
+/**
+ * Pre-settle gate check: re-read receiver SEP-12 status right before settle
+ * and require ACCEPTED.
+ *
+ * `comply()` runs once before `open`, but between comply and settle the anchor
+ * can move the receiver to NEEDS_INFO or REJECTED — especially on retry paths
+ * with backoff sleeps.
+ *
+ * For corridors with no `kyc_server` the adapter returns accepted; record
+ * `detail: "no SEP-12 server"` so the audit trail shows it was not really checked.
+ * Anything other than accepted returns `PRESETTLE_RECEIVER_NOT_ACCEPTED`.
+ */
+export function receiverKycCheck(adapter: ReceiverKycAdapterLike): GateCheck {
+  return {
+    name: "sep12.receiver",
+    async run(ctx: GateContext): Promise<CheckResult> {
+      const start = Date.now();
+      try {
+        const outcome = await adapter.ensureCompliance(ctx.intent, ctx.corridor);
+        if (!outcome.ok) {
+          return {
+            name: "sep12.receiver",
+            passed: false,
+            code: "PRESETTLE_RECEIVER_NOT_ACCEPTED",
+            detail: outcome.error.message,
+            durationMs: Date.now() - start,
+          };
+        }
+
+        if (outcome.value.status === "accepted") {
+          const hasKycServer = Boolean(ctx.corridor.dest?.endpoints?.kyc_server);
+          return {
+            name: "sep12.receiver",
+            passed: true,
+            detail: hasKycServer ? "receiver SEP-12 status is accepted" : "no SEP-12 server",
+            durationMs: Date.now() - start,
+          };
+        }
+
+        return {
+          name: "sep12.receiver",
+          passed: false,
+          code: "PRESETTLE_RECEIVER_NOT_ACCEPTED",
+          detail: `receiver SEP-12 status is ${outcome.value.status}`,
+          durationMs: Date.now() - start,
+        };
+      } catch (err: unknown) {
+        return {
+          name: "sep12.receiver",
+          passed: false,
+          code: "PRESETTLE_RECEIVER_NOT_ACCEPTED",
+          detail: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - start,
+        };
+      }
+    },
+  };
+}

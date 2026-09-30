@@ -73,6 +73,15 @@ although `web/` has been its own pnpm workspace root since #80
 (`web/pnpm-workspace.yaml`, with its own lockfile and its own CI job).
 Documentation only — no code, no behaviour change.
 
+### Added — Gate check: re-read receiver SEP-12 status and require ACCEPTED (#156) (2026-09-30)
+
+Added `receiverKycCheck(adapter)` GateCheck (name `sep12.receiver`) in `@corridor/sep31`:
+
+- Calls `adapter.ensureCompliance(intent, corridor)` right before settlement to verify receiver status is still accepted.
+- Fails closed with `PRESETTLE_RECEIVER_NOT_ACCEPTED` on `PROCESSING`, `NEEDS_INFO`, `REJECTED`, or anchor errors (e.g. HTTP 500).
+- For corridors without a `kyc_server`, passes with `detail: "no SEP-12 server"` so the audit trail clearly distinguishes unverified lanes from verified ones.
+- Added `PRESETTLE_RECEIVER_NOT_ACCEPTED` to `CorridorErrorCode` in `@corridor/types`.
+
 ### Maintenance — ESLint 10 landed
 
 - `eslint` 10 landed in [#37](https://github.com/ezedike-evan/corridor-in-a-box/pull/37).
