@@ -185,7 +185,14 @@ describe("shared wiring module (wire.ts)", () => {
 
     it("refuses over-cap amount against proof.canary_max_amount", async () => {
       const c = makeCorridor({
-        proof: { canary_max_amount: "5.00" },
+        proof: {
+          canary_max_amount: "5.00",
+          canary_completed_at: "2026-09-01",
+          stellar_tx_hash: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          anchor_transaction_id: "canary-fixture-tx",
+          amount: "1.00",
+          max_age_days: 30,
+        },
       });
       const res = await executeCanary(c, { amount: "5.01" });
       expect(res.exitCode).toBe(EXIT_REFUSED);

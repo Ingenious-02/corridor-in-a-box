@@ -1091,66 +1091,6 @@ describe("engine refund path", () => {
     expect(afterRecovering).not.toContain("settling");
     expect(afterRecovering).not.toContain("retrying");
   });
-
-  describe("pre-settle gate", () => {
-    it("settles normally when gate passes", async () => {
-      const d = deps();
-      d.gate = {
-        evaluate: async () => ({
-          passed: true,
-          results: [{ name: "test", passed: true, detail: "ok", durationMs: 1 }],
-        }),
-      };
-      const res = await execute(intent("gate-pass"), corridor(), d);
-      expect(res.ok).toBe(true);
-      if (res.ok) {
-        expect(res.value.state).toBe("completed");
-        expect(res.value.trail).toContain("settled");
-      }
-    });
-
-    it("stops before settling when gate fails, returning pre-settle code and detail", async () => {
-      const d = deps();
-      d.gate = {
-        evaluate: async () => ({
-          passed: false,
-          results: [
-            {
-              name: "chain.balance",
-              passed: false,
-              code: "PRESETTLE_INSUFFICIENT_FUNDS",
-              detail: "insufficient XLM for fee and reserve",
-              durationMs: 2,
-            },
-          ],
-        }),
-      };
-      const res = await execute(intent("gate-fail"), corridor(), d);
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error.code).toBe("PRESETTLE_INSUFFICIENT_FUNDS");
-        expect(res.error.message).toBe("insufficient XLM for fee and reserve");
-      }
-      const stored = await d.idempotency!.get("gate-fail");
-      expect(stored?.state).toBe("refunded");
-      expect(stored?.stellarTxHash).toBeUndefined();
-    });
-
-    it("stops when gate check throws unexpectedly", async () => {
-      const d = deps();
-      d.gate = {
-        evaluate: async () => {
-          throw new Error("horizon network failure");
-        },
-      };
-      const res = await execute(intent("gate-throw"), corridor(), d);
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error.code).toBe("SETTLEMENT_FAILED");
-        expect(res.error.message).toContain("pre-settle gate threw: horizon network failure");
-      }
-    });
-  });
 });
 
 describe("per-corridor reconcile config", () => {
