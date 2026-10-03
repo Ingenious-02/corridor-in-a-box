@@ -951,7 +951,8 @@ export function receiverKycCheck(adapter: ReceiverKycAdapterLike): GateCheck {
         }
 
         if (outcome.value.status === "accepted") {
-          const hasKycServer = Boolean(ctx.corridor.dest?.endpoints?.kyc_server);
+          const endpoints = ctx.corridor.dest.endpoints;
+          const hasKycServer = Boolean("kyc_server" in endpoints && endpoints.kyc_server);
           return {
             name: "sep12.receiver",
             passed: true,
