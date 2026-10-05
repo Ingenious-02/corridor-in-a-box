@@ -11,7 +11,14 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { ok, fail, type Outcome, compareAmounts } from "@corridor/types";
+import {
+  ok,
+  fail,
+  type Ok,
+  type Err,
+  type CorridorError,
+  compareAmounts,
+} from "@corridor/types";
 
 /** SEP endpoints an anchor exposes. Only home_domain is mandatory; the rest are
  *  discovered from its stellar.toml in practice, but may be pinned here. */
@@ -314,17 +321,47 @@ export function protocolOf(anchor: z.infer<typeof DestSchema>): DestProtocol {
 export type SourceAnchorConfig = z.infer<typeof SourceAnchorSchema>;
 export type Proof = z.infer<typeof ProofSchema>;
 
+/** Successful parse, plus non-fatal warnings (e.g. deprecated legacy shapes).
+ *  Assignable to `Outcome<Corridor>`, so existing callers are unaffected. */
+export type ParseCorridorOutcome =
+  (Ok<Corridor> & { readonly warnings: string[] }) | Err<CorridorError>;
+
 /** Parse + validate a corridor manifest from an object already in memory. */
-export function parseCorridor(raw: unknown): Outcome<Corridor> {
+export function parseCorridor(raw: unknown): ParseCorridorOutcome {
+  const warnings: string[] = [];
+  const dest =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>).dest : undefined;
+  if (dest && typeof dest === "object" && !Array.isArray(dest) && !("protocol" in dest)) {
+    // Legacy flat SEP-31 manifest: no `protocol`. Parsed as sep31 for backward
+    // compatibility, but a key belonging to another protocol is ambiguous.
+    const ep = (dest as Record<string, unknown>).endpoints;
+    const keys = ep && typeof ep === "object" ? ep : {};
+    if ("transfer_server" in keys) {
+      return fail(
+        "MANIFEST_INVALID",
+        "dest.protocol: manifest dest specifies transfer_server with no protocol; set protocol: sep6",
+      );
+    }
+    if ("base_url" in keys) {
+      return fail(
+        "MANIFEST_INVALID",
+        "dest.protocol: manifest dest specifies base_url with no protocol; set protocol: custom:<name>",
+      );
+    }
+    warnings.push(
+      "dest anchor specifies no protocol; defaulting to 'sep31'. " +
+        "Set dest.protocol: 'sep31' explicitly; omitting it is deprecated.",
+    );
+  }
   const parsed = CorridorSchema.safeParse(raw);
   if (!parsed.success) {
     return fail("MANIFEST_INVALID", formatZodError(parsed.error), { cause: parsed.error });
   }
-  return ok(parsed.data);
+  return { ...ok(parsed.data), warnings };
 }
 
 /** Read + validate a *.corridor.yaml file from disk. */
-export function loadCorridor(path: string): Outcome<Corridor> {
+export function loadCorridor(path: string): ParseCorridorOutcome {
   let raw: unknown;
   try {
     raw = parseYaml(readFileSync(path, "utf8"));

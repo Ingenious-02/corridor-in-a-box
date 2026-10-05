@@ -53,6 +53,7 @@ import {
   silentLogger,
   type AuditEntry,
   type AuditSink,
+  type Alerting,
   type Logger,
   type Metrics,
 } from "./observability";
@@ -82,6 +83,7 @@ export interface EngineDeps {
    */
   strategies?: readonly SettlementStrategy[];
   idempotency?: IdempotencyStore;
+  waker?: import("./ports").ReconcileWaker;
   now?: () => number;
   /** Injectable sleep so tests don't wait on real backoff/poll delays. */
   sleep?: (ms: number) => Promise<void>;
@@ -97,6 +99,8 @@ export interface EngineDeps {
   logger?: Logger;
   /** Append-only audit sink; receives one entry per state transition. */
   audit?: AuditSink;
+  /** Best-effort operational alerts. Failures are logged and never alter a run. */
+  alerting?: Alerting;
   /** Counter/timing sink. Defaults to a no-op. */
   metrics?: Metrics;
   /** Maximum payment amount while a corridor has no fresh canary proof. Defaults to "10". */
@@ -211,6 +215,18 @@ export async function execute(
       "CORRIDOR_UNPROVEN",
       `corridor ${corridor.id} is ${live.state} on the public network and cannot accept payments`,
     );
+  }
+
+  const min = corridor.limits?.min_amount;
+  if (min) {
+    const cmp = compareAmounts(intent.sourceAmount.amount, min);
+    if (!cmp.ok) return cmp;
+    if (cmp.value < 0) {
+      return fail(
+        "AMOUNT_INVALID",
+        `sourceAmount "${intent.sourceAmount.amount}" is below corridor ${corridor.id} min_amount ${min}`,
+      );
+    }
   }
 
   if (max) {
@@ -542,6 +558,7 @@ export async function execute(
         deadlineMs,
         pollMs,
         stallThreshold,
+        wake: deps.waker?.signal(opened.value.transactionId),
         externalStallMs,
         corridorId: corridor.id,
         logger: deps.logger,
@@ -852,6 +869,25 @@ async function emitTransition(
     metrics.increment("corridor.terminal", { state: run.state, corridor: run.corridorId });
   }
   await deps.audit?.record(entry);
+  if (run.state === "held" || run.state === "refund_pending") {
+    try {
+      await deps.alerting?.raise({
+        kind: run.state,
+        corridorId: run.corridorId,
+        idempotencyKey: run.idempotencyKey,
+        stellarTxHash: run.stellarTxHash,
+        lastError: run.lastError ?? error,
+        at,
+      });
+    } catch (alertError) {
+      (deps.logger ?? silentLogger).log("warn", "corridor.alert_failed", {
+        corridorId: run.corridorId,
+        idempotencyKey: run.idempotencyKey,
+        kind: run.state,
+        error: alertError instanceof Error ? alertError.message : String(alertError),
+      });
+    }
+  }
 }
 
 /**
@@ -1025,6 +1061,7 @@ async function resumeRun(
       deadlineMs: now() + corridor.recovery.timeout_seconds * 1000,
       pollMs,
       stallThreshold,
+      wake: deps.waker?.signal(run.transactionId),
       externalStallMs: externalStallBudgetMs(corridor),
       corridorId: corridor.id,
       logger: deps.logger,

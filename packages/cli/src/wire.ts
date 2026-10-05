@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Networks } from "@stellar/stellar-sdk";
 import type { Corridor } from "@corridor/manifest";
 import { liveness } from "@corridor/manifest";
-import { Sep31Adapter } from "@corridor/sep31";
+import { Sep31Adapter, sep31GateChecks } from "@corridor/sep31";
 import {
   LocalKeypairSigner,
   StellarSep10Signer,
@@ -23,6 +23,7 @@ import {
   consoleLogger,
   execute,
   type EngineDeps,
+  type GateCheck,
 } from "@corridor/engine";
 import { compareAmounts, type Outcome, type PaymentIntent } from "@corridor/types";
 import deploymentsData from "../../../contracts/deployments.json";
@@ -166,8 +167,9 @@ export function createDefaultGate(
   inspector: AccountInspectorLike,
   signerPublicKey: string,
   opts?: BalanceCheckOptions,
+  extraChecks: readonly GateCheck[] = [],
 ): CompositeGate {
-  return new CompositeGate([balanceCheck(inspector, signerPublicKey, opts)]);
+  return new CompositeGate([balanceCheck(inspector, signerPublicKey, opts), ...extraChecks]);
 }
 
 export interface ResolverWiringOptions {
@@ -322,7 +324,12 @@ export function wireCorridorDeps(
   const store = new InMemoryIdempotencyStore();
 
   const inspector = new AccountInspector({ horizonUrl });
-  const gate = createDefaultGate(inspector, signer.publicKey);
+  const gate = createDefaultGate(
+    inspector,
+    signer.publicKey,
+    undefined,
+    sep31GateChecks(adapter),
+  );
 
   const resolver = createRegistryRouteResolver(corridor, {
     signer,

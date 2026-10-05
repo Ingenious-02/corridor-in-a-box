@@ -69,6 +69,54 @@ export interface SettlementSubmitter {
   refund(req: RefundRequest): Promise<Outcome<SettlementRef>>;
 }
 
+export interface WakeSignal {
+  readonly aborted: boolean;
+  addEventListener(type: "abort", cb: () => void): void;
+  removeEventListener(type: "abort", cb: () => void): void;
+  /** Consume a delivered wake so the next poll sleeps normally again. */
+  reset?(): void;
+}
+
+export interface ReconcileWaker {
+  /** Return an abort signal for this transaction. */
+  signal(transactionId: string): WakeSignal;
+  /** Signal that this transaction should wake and poll immediately. */
+  wake(transactionId: string): void;
+}
+
+export class InMemoryWaker implements ReconcileWaker {
+  private readonly listeners = new Map<string, Set<() => void>>();
+  private readonly aborted = new Set<string>();
+
+  signal(transactionId: string) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    return {
+      get aborted() {
+        return self.aborted.has(transactionId);
+      },
+      addEventListener(type: "abort", cb: () => void) {
+        if (!self.listeners.has(transactionId)) self.listeners.set(transactionId, new Set());
+        self.listeners.get(transactionId)!.add(cb);
+      },
+      removeEventListener(type: "abort", cb: () => void) {
+        self.listeners.get(transactionId)?.delete(cb);
+      },
+      reset() {
+        self.aborted.delete(transactionId);
+      },
+    };
+  }
+
+  wake(transactionId: string) {
+    this.aborted.add(transactionId);
+    const set = this.listeners.get(transactionId);
+    if (set) {
+      for (const cb of set) cb();
+    }
+  }
+}
+
 /**
  * The kind of deposit instructions the receiving anchor issued.
  *

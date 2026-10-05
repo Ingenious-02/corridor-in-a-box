@@ -188,6 +188,13 @@ export interface PollOptions {
    * transitioning through intermediate states won't be misdiagnosed.
    */
   stallThreshold?: number;
+  /** Signal to cut the sleep short and poll immediately. */
+  wake?: {
+    readonly aborted: boolean;
+    addEventListener(type: "abort", cb: () => void): void;
+    removeEventListener(type: "abort", cb: () => void): void;
+    reset?(): void;
+  };
   /** Maximum elapsed time in an external phase before declaring a stall. */
   externalStallMs?: number;
   /** Corridor ID for metric tagging. Optional. */
@@ -313,7 +320,27 @@ export async function reconcileUntil(
       lastPhase === "external"
         ? Math.min(nextPollMs, Math.max(opts.pollMs, 60_000))
         : opts.pollMs;
-    await opts.sleep(delay);
+    if (opts.wake) {
+      if (opts.wake.aborted) {
+        // Wake already delivered: poll now, then consume it so we don't spin.
+        opts.wake.reset?.();
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const complete = () => {
+          if (done) return;
+          done = true;
+          opts.wake?.removeEventListener("abort", complete);
+          resolve();
+        };
+        opts.wake?.addEventListener("abort", complete);
+        opts.sleep(delay).then(complete).catch(complete);
+      });
+      opts.wake.reset?.();
+    } else {
+      await opts.sleep(delay);
+    }
     nextPollMs =
       lastPhase === "external"
         ? Math.min(delay * 2, Math.max(opts.pollMs, 60_000))

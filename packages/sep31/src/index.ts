@@ -706,6 +706,37 @@ export class Sep31Adapter implements AnchorAdapter {
     }
   }
 
+  /** Not part of AnchorAdapter. Used by the engine/service to register for push notifications. */
+  async registerCallback(transactionId: string, url: string): Promise<Outcome<void>> {
+    const sep31 = this.anchor.endpoints.transfer_server_sep31;
+    if (!sep31) return fail("ANCHOR_UNAVAILABLE", `${this.name}: no SEP-31 server`);
+    const auth = await this.authToken();
+    if (!auth.ok) return auth;
+    try {
+      const res = await this.fetchImpl(`${sep31}/transactions/${transactionId}/callback`, {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          ...this.authHeader(auth.value),
+        },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        return fail(
+          "ANCHOR_UNAVAILABLE",
+          `${this.name}: register callback HTTP ${res.status}`,
+          { retryable: res.status >= 500 },
+        );
+      }
+      return ok(undefined);
+    } catch (cause) {
+      return fail("ANCHOR_UNAVAILABLE", `${this.name}: register callback failed`, {
+        retryable: true,
+        cause,
+      });
+    }
+  }
+
   async getTransaction(transactionId: string): Promise<Outcome<TransactionStatus>> {
     const sep31 = this.anchor.endpoints.transfer_server_sep31;
     if (!sep31) return fail("ANCHOR_UNAVAILABLE", `${this.name}: no SEP-31 server`);
@@ -893,13 +924,13 @@ export interface Sep31InfoCheckResult extends CheckResult {
  * Gate check that verifies the receiving anchor's live SEP-31 /info still lists
  * and enables the corridor's bridge asset immediately before settlement.
  */
-export function sep31InfoCheck(adapter: Sep31Adapter): GateCheck {
+export function sep31InfoCheck(adapter: Sep31Adapter, infoSource?: InfoSource): GateCheck {
   return {
     name: "sep31.info.asset",
     async run(ctx: GateContext): Promise<Sep31InfoCheckResult> {
       const start = Date.now();
       const bridgeAsset = ctx.corridor.settlement.bridge_asset;
-      const infoOutcome = await adapter.getInfo();
+      const infoOutcome = await (infoSource ? infoSource(ctx) : adapter.getInfo());
 
       if (!infoOutcome.ok) {
         return {
@@ -958,6 +989,22 @@ export function sep31InfoCheck(adapter: Sep31Adapter): GateCheck {
   };
 }
 
+import { amountRangeCheck, sharedInfoSource, type InfoSource } from "./amountRangeCheck";
+export {
+  amountRangeCheck,
+  sharedInfoSource,
+  type InfoSource,
+  type InfoAdapterLike,
+} from "./amountRangeCheck";
+
+/**
+ * The standard SEP-31 gate checks (/info asset listing and amount range),
+ * sharing a single /info fetch per gate run. Pass to `defaultSep31Gate({ checks })`.
+ */
+export function sep31GateChecks(adapter: Sep31Adapter): GateCheck[] {
+  const info = sharedInfoSource(adapter);
+  return [sep31InfoCheck(adapter, info), amountRangeCheck(adapter, info)];
+}
 export {
   openedTxCheck,
   type OpenedTxCheckOptions,

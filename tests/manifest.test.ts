@@ -483,4 +483,50 @@ describe("limits", () => {
       expect(r.value.limits?.max_amount).toBe("50.00");
     }
   });
+
+  describe("legacy flat SEP-31 dest (no protocol)", () => {
+    const { protocol: _p, ...legacyDest } = valid.dest;
+    const legacy = { ...valid, dest: legacyDest };
+
+    it("parses as sep31 and returns a deprecation warning", () => {
+      const r = parseCorridor(legacy);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.dest.protocol).toBe("sep31");
+        expect(r.warnings.some((w) => w.includes("sep31") && w.includes("deprecated"))).toBe(
+          true,
+        );
+      }
+    });
+
+    it("emits no warning when protocol is explicit", () => {
+      const r = parseCorridor(valid);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.warnings).toEqual([]);
+    });
+
+    it("rejects transfer_server without protocol, telling the author to set sep6", () => {
+      const r = parseCorridor({
+        ...valid,
+        dest: {
+          ...legacyDest,
+          endpoints: { home_domain: "d.example", transfer_server: "https://d.example/sep6" },
+        },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.message).toContain("protocol: sep6");
+    });
+
+    it("rejects base_url without protocol, telling the author to set custom:<name>", () => {
+      const r = parseCorridor({
+        ...valid,
+        dest: {
+          ...legacyDest,
+          endpoints: { home_domain: "d.example", base_url: "https://d.example/api" },
+        },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.message).toContain("custom:<name>");
+    });
+  });
 });

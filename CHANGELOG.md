@@ -7,6 +7,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it reache
 
 ## [Unreleased]
 
+### Added — Legacy flat SEP-31 dest endpoints: deprecation warning (#180)
+
+- `parseCorridor` / `loadCorridor` now return `warnings: string[]` on success (additive; still assignable to `Outcome<Corridor>`).
+- A destination with no `protocol` (legacy flat SEP-31 endpoints) still parses as `sep31` and now yields a deprecation warning.
+- A destination with no `protocol` but a `transfer_server` or `base_url` endpoint is rejected with guidance to set `protocol: sep6` or `protocol: custom:<name>`.
+
 ### Added — `fx.quote_source: external` path (#190)
 
 - `ExternalQuoteProvider` and `EngineDeps.externalQuote`: operators inject a
