@@ -203,4 +203,10 @@ describe("corridor CLI", () => {
       expect(r.stderr).toContain("must be VERIFIED to run canary");
     });
   });
+
+  it("plan: prints limits min and max when set", () => {
+    const r = run(["plan", "tests/fixtures/limits.corridor.yaml"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("limits:   min=10.00 max=500.00");
+  });
 });

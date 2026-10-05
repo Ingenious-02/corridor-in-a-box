@@ -74,6 +74,17 @@ export function preflightDoctor(opts: DoctorOptions = {}): {
   return { ok: true };
 }
 
+/** Trim trailing "/" without a backtracking regex (avoids polynomial ReDoS). */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) end--;
+  return url.slice(0, end);
+}
+
+function stripSuffix(s: string, suffix: string): string {
+  return s.endsWith(suffix) ? s.slice(0, -suffix.length) : s;
+}
+
 /**
  * Checks whether the anchor quotes the corridor's bridge asset.
  */
@@ -86,18 +97,23 @@ export async function assertAssetQuotable(
   const code = corridor.settlement.bridge_asset;
   const want = `stellar:${code}:${issuer}`;
 
+  const destEndpoints = corridor.dest.endpoints as {
+    quote_server?: string;
+    transfer_server_sep31?: string;
+    kyc_server?: string;
+  };
   const quoteServer =
     anchorUrl ??
-    corridor.dest.endpoints.quote_server ??
-    (corridor.dest.endpoints.transfer_server_sep31
-      ? corridor.dest.endpoints.transfer_server_sep31.replace(/\/sep31\/?$/, "")
+    destEndpoints.quote_server ??
+    (destEndpoints.transfer_server_sep31
+      ? stripSuffix(stripTrailingSlashes(destEndpoints.transfer_server_sep31), "/sep31")
       : undefined);
 
   if (!quoteServer && corridor.fx.quote_source !== "sep38") {
     return { ok: true };
   }
 
-  const base = (quoteServer ?? "http://localhost:8080").replace(/\/+$/, "");
+  const base = stripTrailingSlashes(quoteServer ?? "http://localhost:8080");
   const infoUrl = base.endsWith("/sep38") ? `${base}/info` : `${base}/sep38/info`;
 
   let body: { assets?: { asset?: string }[] };
@@ -124,16 +140,15 @@ export async function assertAssetQuotable(
 
 /** Point destination endpoints at a reference server. */
 export function pinToReferenceAnchor(corridor: Corridor, anchorUrl?: string): Corridor {
-  const anchor = (
-    anchorUrl ??
-    process.env.REFERENCE_ANCHOR_URL ??
-    "http://localhost:8080"
-  ).replace(/\/+$/, "");
+  const anchor = stripTrailingSlashes(
+    anchorUrl ?? process.env.REFERENCE_ANCHOR_URL ?? "http://localhost:8080",
+  );
   const host = anchor.replace(/^https?:\/\//, "");
   return {
     ...corridor,
     dest: {
       ...corridor.dest,
+      protocol: "sep31" as const,
       endpoints: {
         ...corridor.dest.endpoints,
         home_domain: host,
@@ -202,6 +217,9 @@ export function createRegistryRouteResolver(
         );
       },
       async staleness(_d: string): Promise<number> {
+        throw new Error(`no registry deployed on ${network}`);
+      },
+      async tomlHash(_d: string): Promise<string> {
         throw new Error(`no registry deployed on ${network}`);
       },
     };
@@ -441,7 +459,7 @@ export async function executeCanary(
   let senderSep12Id = process.env.SENDER_SEP12_ID;
   let recipientSep12Id = process.env.RECIPIENT_SEP12_ID;
 
-  if (corridor.dest.endpoints.kyc_server) {
+  if ((corridor.dest.endpoints as { kyc_server?: string }).kyc_server) {
     if (!senderSep12Id) {
       console.log("registering sender (SEP-12)…");
       const reg = await registerSep12Customer(
