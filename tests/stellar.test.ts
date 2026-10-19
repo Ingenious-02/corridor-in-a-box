@@ -222,7 +222,7 @@ describe("StellarSettlementSubmitter.submit — ambiguous failure safety", () =>
 
     const r = await sub.submit(testRequest());
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.ledger).toBe(4_242);
+    if (r.ok && r.value.kind === "stellar") expect(r.value.ledger).toBe(4_242);
     // Exactly one on-chain submission attempt — the fix must never resubmit
     // to resolve the ambiguity, only look the original tx up by hash.
     expect(server.submitTransaction).toHaveBeenCalledTimes(1);
@@ -451,7 +451,7 @@ describe("StellarClaimableBalanceStrategy", () => {
 
     const res = await strat.submit(req);
     expect(res.ok).toBe(true);
-    if (!res.ok) return;
+    if (!res.ok || res.value.kind !== "stellar") return;
 
     expect(res.value.ledger).toBe(500);
     expect(res.value.claimableBalanceId).toBeDefined();
@@ -591,7 +591,7 @@ describe("StellarClaimableBalanceStrategy", () => {
 
     const r = await strat.submit(testRequest());
     expect(r.ok).toBe(true);
-    if (r.ok) {
+    if (r.ok && r.value.kind === "stellar") {
       expect(r.value.ledger).toBe(8_888);
       expect(r.value.claimableBalanceId).toBeDefined();
     }
@@ -1498,10 +1498,10 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok) {
+    if (res.ok && res.value?.kind === "stellar") {
       expect(res.value).toBeDefined();
-      expect(res.value?.stellarTxHash).toBe("existing-tx-1");
-      expect(res.value?.ledger).toBe(500);
+      expect(res.value.stellarTxHash).toBe("existing-tx-1");
+      expect(res.value.ledger).toBe(500);
     }
   });
 
@@ -1536,7 +1536,7 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok) {
+    if (res.ok && res.value?.kind === "stellar") {
       expect(res.value?.stellarTxHash).toBe("hash-tx-1");
       expect(res.value?.ledger).toBe(600);
     }
@@ -1585,8 +1585,8 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.value?.stellarTxHash).toBe("xlm-tx-1");
+    if (res.ok && res.value?.kind === "stellar") {
+      expect(res.value.stellarTxHash).toBe("xlm-tx-1");
     }
   });
 
@@ -1866,9 +1866,9 @@ describe("settlement on-chain verification", () => {
       }),
     } as unknown as Horizon.Server;
     const verify = createChainVerifier(new AccountInspector({ horizonServer: server }));
-    expect((await verify({ stellarTxHash: "h" }, req())).ok).toBe(true);
+    expect((await verify({ kind: "stellar", stellarTxHash: "h" }, req())).ok).toBe(true);
     const bad = await verify(
-      { stellarTxHash: "h" },
+      { kind: "stellar", stellarTxHash: "h" },
       req({ to: Keypair.random().publicKey() }),
     );
     expect(bad.ok).toBe(false);

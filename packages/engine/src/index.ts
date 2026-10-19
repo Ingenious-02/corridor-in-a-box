@@ -11,6 +11,7 @@ export { canTransition, isTerminal, TERMINAL, type CorridorState } from "./state
 export {
   InMemoryIdempotencyStore,
   hasRequestedRefund,
+  hasSettlementRef,
   type IdempotencyStore,
   type StoredRun,
   type ResolutionOutcome,
@@ -47,7 +48,9 @@ export {
   UnimplementedSubmitter,
   createMockSubmitter,
   StellarPaymentStrategy,
+  AdapterSettledStrategy,
   defaultStrategies,
+  settlementId,
   type SettlementSubmitter,
   type ChainVerifier,
   type SettlementRef,

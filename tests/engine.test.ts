@@ -23,7 +23,7 @@ import {
   type StoredRun,
 } from "@corridor/engine";
 import type { TransactionStatus } from "@corridor/adapter-kit";
-import { fail, ok, type Outcome, type PaymentIntent } from "@corridor/types";
+import { fail, ok, type Outcome, type PaymentIntent, settlementId } from "@corridor/types";
 
 function corridor(): Corridor {
   const r = parseCorridor({
@@ -152,10 +152,10 @@ describe("engine.execute", () => {
     const submitter: SettlementSubmitter = {
       async submit() {
         submitCalled = true;
-        return ok({ stellarTxHash: "hash", ledger: 1 });
+        return ok({ kind: "stellar", stellarTxHash: "hash", ledger: 1 });
       },
       async refund() {
-        return ok({ stellarTxHash: "refund-hash", ledger: 2 });
+        return ok({ kind: "stellar", stellarTxHash: "refund-hash", ledger: 2 });
       },
     };
     const store = new InMemoryIdempotencyStore();
@@ -221,7 +221,11 @@ describe("engine.execute", () => {
 
   it("reuses an existing on-chain settlement without calling submit()", async () => {
     let submitCalls = 0;
-    const existingRef = { stellarTxHash: "existing-tx-hash-123", ledger: 777 };
+    const existingRef = {
+      kind: "stellar" as const,
+      stellarTxHash: "existing-tx-hash-123",
+      ledger: 777,
+    };
     const submitter = createMockSubmitter({ existingRef });
     const originalSubmit = submitter.submit;
     submitter.submit = async (req) => {
@@ -255,10 +259,10 @@ describe("engine pre-settle gate", () => {
     const submitter: SettlementSubmitter = {
       async submit() {
         submitCalls++;
-        return ok({ stellarTxHash: "tx-123", ledger: 100 });
+        return ok({ kind: "stellar", stellarTxHash: "tx-123", ledger: 100 });
       },
       async refund() {
-        return ok({ stellarTxHash: "refund-123", ledger: 101 });
+        return ok({ kind: "stellar", stellarTxHash: "refund-123", ledger: 101 });
       },
     };
 
@@ -308,10 +312,10 @@ describe("engine pre-settle gate", () => {
     const submitter: SettlementSubmitter = {
       async submit() {
         submitCalls++;
-        return ok({ stellarTxHash: "tx-123", ledger: 100 });
+        return ok({ kind: "stellar", stellarTxHash: "tx-123", ledger: 100 });
       },
       async refund() {
-        return ok({ stellarTxHash: "refund-123", ledger: 101 });
+        return ok({ kind: "stellar", stellarTxHash: "refund-123", ledger: 101 });
       },
     };
     const c = corridor();
@@ -351,7 +355,7 @@ describe("engine pre-settle gate", () => {
         return fail("SETTLEMENT_FAILED", "transient network error", { retryable: true });
       },
       async refund() {
-        return ok({ stellarTxHash: "refund-123", ledger: 101 });
+        return ok({ kind: "stellar", stellarTxHash: "refund-123", ledger: 101 });
       },
     };
 
@@ -413,10 +417,10 @@ describe("engine pre-settle gate", () => {
     const submitter: SettlementSubmitter = {
       async submit() {
         submitCalled = true;
-        return ok({ stellarTxHash: "tx-123", ledger: 100 });
+        return ok({ kind: "stellar", stellarTxHash: "tx-123", ledger: 100 });
       },
       async refund() {
-        return ok({ stellarTxHash: "refund-123", ledger: 101 });
+        return ok({ kind: "stellar", stellarTxHash: "refund-123", ledger: 101 });
       },
     };
 
@@ -601,7 +605,8 @@ describe("engine crash resume states", () => {
         amount: { asset: "USDC", amount: "100.00" },
         corridor: corridor(),
       });
-      if (!existingPayment.ok) throw new Error("mock settlement did not succeed");
+      if (!existingPayment.ok || existingPayment.value.kind !== "stellar")
+        throw new Error("mock settlement did not succeed");
       await store.put({ ...resumableRun(state, key), stellarTxHash: undefined });
       const r = await execute(intent(key), corridor(), {
         ...deps(),
@@ -851,7 +856,7 @@ describe("engine recovery", () => {
       submitter: {
         submit: base.submit,
         refund: async (req) => {
-          refunded.push(req.original.stellarTxHash);
+          refunded.push(settlementId(req.original));
           return base.refund(req);
         },
       },
@@ -1142,7 +1147,7 @@ describe("engine recovery", () => {
       submitter: {
         submit: base.submit,
         refund: async (req) => {
-          refunded.push(req.original.stellarTxHash);
+          refunded.push(settlementId(req.original));
           return base.refund(req);
         },
       },
@@ -1203,7 +1208,7 @@ describe("engine recovery", () => {
       submitter: {
         submit: base.submit,
         refund: async (req) => {
-          refunded.push(req.original.stellarTxHash);
+          refunded.push(settlementId(req.original));
           return base.refund(req);
         },
       },
@@ -1583,7 +1588,7 @@ function refundHarness(
   const submitter: SettlementSubmitter = {
     submit: base.submit,
     async refund(req) {
-      refundCalls.push({ stellarTxHash: req.original.stellarTxHash, reason: req.reason });
+      refundCalls.push({ stellarTxHash: settlementId(req.original), reason: req.reason });
       if (opts.refundError) {
         return fail("SETTLEMENT_FAILED", opts.refundError, { retryable: false });
       }
@@ -1973,6 +1978,7 @@ describe("Quote fee and settlement amount validation", () => {
     const submitter: SettlementSubmitter = {
       submit: async () =>
         ok({
+          kind: "stellar",
           stellarTxHash: "tx-fee-hash",
           ledger: 12345,
           feeCharged: "100",
@@ -2011,7 +2017,7 @@ describe("engine chain verifier", () => {
       {
         ...h.deps,
         chainVerifier: async (ref, req) => {
-          seen.push({ to: req.to, amount: req.amount.amount, hash: ref.stellarTxHash });
+          seen.push({ to: req.to, amount: req.amount.amount, hash: settlementId(ref) });
           return ok(undefined);
         },
       },
@@ -2206,7 +2212,7 @@ describe("pre-settle gate enforcement", () => {
         if (submitCalls === 1) {
           return fail("SETTLEMENT_FAILED", "transient failure", { retryable: true });
         }
-        return ok({ stellarTxHash: "0xabc", anchorTxId: "tx-123" });
+        return ok({ kind: "stellar", stellarTxHash: "0xabc", anchorTxId: "tx-123" });
       },
       refund: async () => fail("SETTLEMENT_FAILED", "not reached", { retryable: false }),
     };
@@ -2250,7 +2256,7 @@ describe("engine dry run", () => {
     const submitter: SettlementSubmitter = {
       submit: async () => {
         calls.submit++;
-        return ok({ stellarTxHash: "0xshould-not-exist" });
+        return ok({ kind: "stellar", stellarTxHash: "0xshould-not-exist" });
       },
       findExisting: async () => {
         calls.findExisting++;
@@ -2409,6 +2415,7 @@ describe("SettlementStrategy", () => {
     // Spy to verify the correct strategy's settle() was called.
     const spySettle = vi.fn().mockResolvedValue(
       ok({
+        kind: "stellar",
         stellarTxHash: "spy000000000000000000000000000000000000000000000000000000000001",
         ledger: 1,
       }),
@@ -2768,5 +2775,158 @@ describe("engine adapter capabilities compatibility (#188)", () => {
       expect(r.value.state).toBe("completed");
       expect(r.value.trail).toContain("compliant");
     }
+  });
+});
+
+describe("adapter-reported (off-chain) settlement (#186)", () => {
+  it("mock adapter with adapter_settled instructions reaches completed with no submitter call", async () => {
+    let submitCalled = false;
+    let findExistingCalled = false;
+    const submitter: SettlementSubmitter = {
+      async submit() {
+        submitCalled = true;
+        return ok({ kind: "stellar", stellarTxHash: "stellar-tx-should-not-be-called" });
+      },
+      async findExisting() {
+        findExistingCalled = true;
+        return ok(undefined);
+      },
+      async refund() {
+        return fail("SETTLEMENT_FAILED", "not reached", { retryable: false });
+      },
+    };
+
+    const confirmSettlementSpy = vi.fn().mockResolvedValue(
+      ok({
+        kind: "adapter" as const,
+        reference: "otc_ref_98765",
+        reportedAt: 1700000000000,
+      }),
+    );
+
+    const adapter = createMockAdapter({
+      instructions: { kind: "adapter_settled", reference: "otc_ref_98765" },
+    });
+    adapter.confirmSettlement = confirmSettlementSpy;
+
+    const d: EngineDeps = {
+      resolver: new StaticRouteResolver(() => adapter, {
+        trustManifestWithoutAttestation: true,
+      }),
+      submitter,
+      idempotency: new InMemoryIdempotencyStore(),
+      trustManifestWithoutAttestation: true,
+      unsafeSkipPreSettleGate: true,
+    };
+
+    const r = await execute(intent("adapter-settled-1"), corridor(), d);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.value.state).toBe("completed");
+    expect(r.value.settlementKind).toBe("adapter");
+    expect(r.value.settlementRef).toEqual({
+      kind: "adapter",
+      reference: "otc_ref_98765",
+      reportedAt: 1700000000000,
+    });
+    expect(r.value.stellarTxHash).toBeUndefined();
+    expect(confirmSettlementSpy).toHaveBeenCalledOnce();
+    expect(submitCalled).toBe(false);
+    expect(findExistingCalled).toBe(false);
+  });
+
+  it("resume from settled with an adapter settlement ref re-polls and does not re-settle", async () => {
+    let submitCalled = false;
+    let findExistingCalled = false;
+    const submitter: SettlementSubmitter = {
+      async submit() {
+        submitCalled = true;
+        return ok({ kind: "stellar", stellarTxHash: "should-not-be-called" });
+      },
+      async findExisting() {
+        findExistingCalled = true;
+        return ok(undefined);
+      },
+      async refund() {
+        return fail("SETTLEMENT_FAILED", "not reached", { retryable: false });
+      },
+    };
+
+    const confirmSettlementSpy = vi.fn().mockResolvedValue(
+      ok({
+        kind: "adapter" as const,
+        reference: "ref_confirm_should_not_be_called",
+        reportedAt: Date.now(),
+      }),
+    );
+
+    const adapter = createMockAdapter();
+    adapter.confirmSettlement = confirmSettlementSpy;
+    let pollCount = 0;
+    const origGetTransaction = adapter.getTransaction.bind(adapter);
+    adapter.getTransaction = async (txId) => {
+      pollCount++;
+      return origGetTransaction(txId);
+    };
+
+    const store = new InMemoryIdempotencyStore();
+    const key = "resume-adapter-settled";
+    await store.put({
+      idempotencyKey: key,
+      corridorId: "test",
+      state: "settled",
+      version: 4,
+      transactionId: "tx_adapter_resume",
+      quoteId: "q_adapter_resume",
+      quoteExpiresAt: Date.now() + 60_000,
+      quoteFirm: true,
+      settlementAmount: "100.00",
+      settlementKind: "adapter",
+      settlementRef: {
+        kind: "adapter",
+        reference: "otc_ref_existing",
+        reportedAt: 1600000000000,
+      },
+    });
+
+    const d: EngineDeps = {
+      resolver: new StaticRouteResolver(() => adapter, {
+        trustManifestWithoutAttestation: true,
+      }),
+      submitter,
+      idempotency: store,
+      trustManifestWithoutAttestation: true,
+      unsafeSkipPreSettleGate: true,
+    };
+
+    const r = await execute(intent(key), corridor(), d);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.value.state).toBe("completed");
+    expect(r.value.settlementKind).toBe("adapter");
+    expect(r.value.settlementRef).toEqual({
+      kind: "adapter",
+      reference: "otc_ref_existing",
+      reportedAt: 1600000000000,
+    });
+    expect(r.value.stellarTxHash).toBeUndefined();
+
+    // Re-polled via getTransaction
+    expect(pollCount).toBeGreaterThanOrEqual(1);
+    // Did NOT re-settle:
+    expect(confirmSettlementSpy).not.toHaveBeenCalled();
+    expect(submitCalled).toBe(false);
+    expect(findExistingCalled).toBe(false);
+
+    const persisted = await store.get(key);
+    expect(persisted?.state).toBe("completed");
+    expect(persisted?.settlementKind).toBe("adapter");
+    expect(persisted?.settlementRef).toEqual({
+      kind: "adapter",
+      reference: "otc_ref_existing",
+      reportedAt: 1600000000000,
+    });
   });
 });

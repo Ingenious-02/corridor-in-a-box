@@ -43,6 +43,7 @@ import {
   type GateContext,
   type RefundRequest,
   type SettlementRef,
+  settlementId,
   type SettlementRequest,
   type SettlementStrategy,
   type SettlementStrategyContext,
@@ -363,6 +364,7 @@ export class StellarSettlementSubmitter implements SettlementSubmitter {
       const confirmed = await this.confirm(hash as string);
       if (!confirmed.ok) return confirmed;
       return ok<SettlementRef>({
+        kind: "stellar",
         stellarTxHash: hash as string,
         ledger: confirmed.value.ledger,
         feeCharged: confirmed.value.feeCharged,
@@ -386,6 +388,7 @@ export class StellarSettlementSubmitter implements SettlementSubmitter {
       const landed = await this.confirm(hash as string);
       if (landed.ok) {
         return ok<SettlementRef>({
+          kind: "stellar",
           stellarTxHash: hash as string,
           ledger: landed.value.ledger,
           feeCharged: landed.value.feeCharged,
@@ -448,6 +451,7 @@ export class StellarSettlementSubmitter implements SettlementSubmitter {
         }
 
         return ok<SettlementRef>({
+          kind: "stellar",
           stellarTxHash: p.transactionHash,
           ledger: p.ledger,
         });
@@ -466,7 +470,7 @@ export class StellarSettlementSubmitter implements SettlementSubmitter {
   async refund(req: RefundRequest): Promise<Outcome<SettlementRef>> {
     return fail(
       "REFUND_UNSUPPORTED",
-      `payment ${req.original.stellarTxHash} cannot be reversed on-chain; ` +
+      `payment ${settlementId(req.original)} cannot be reversed on-chain; ` +
         `resolve out-of-band with the receiving anchor (SEP-31 gives the sender ` +
         `no refund endpoint) — see the held runbook in docs/operations.md`,
       { retryable: false },
@@ -654,6 +658,7 @@ export class StellarClaimableBalanceStrategy implements SettlementStrategy {
       const claimableBalanceId =
         extractClaimableBalanceId(confirmed.value.resultXdr) ?? calculatedBalanceId;
       return ok<SettlementRef>({
+        kind: "stellar",
         stellarTxHash: hash as string,
         ledger: confirmed.value.ledger,
         feeCharged: confirmed.value.feeCharged,
@@ -671,6 +676,7 @@ export class StellarClaimableBalanceStrategy implements SettlementStrategy {
         const claimableBalanceId =
           extractClaimableBalanceId(landed.value.resultXdr) ?? calculatedBalanceId;
         return ok<SettlementRef>({
+          kind: "stellar",
           stellarTxHash: hash as string,
           ledger: landed.value.ledger,
           feeCharged: landed.value.feeCharged,
@@ -1219,6 +1225,7 @@ export function createChainVerifier(inspector: {
   settlementFacts(hash: string): Promise<Outcome<SettlementFacts>>;
 }): ChainVerifier {
   return async (ref, req) => {
+    if (ref.kind !== "stellar") return ok(undefined);
     const facts = await inspector.settlementFacts(ref.stellarTxHash);
     if (!facts.ok) return facts;
     return verifySettlementFacts(facts.value, req);

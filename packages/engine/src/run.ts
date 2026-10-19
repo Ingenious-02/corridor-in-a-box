@@ -29,16 +29,18 @@ import { canTransition, isTerminal, type CorridorState } from "./state";
 import {
   InMemoryIdempotencyStore,
   hasRequestedRefund,
+  hasSettlementRef,
   type IdempotencyStore,
   type StoredRun,
 } from "./idempotency";
-import type {
-  ChainVerifier,
-  RefundRequest,
-  SettlementRef,
-  SettlementRequest,
-  SettlementStrategy,
-  SettlementSubmitter,
+import {
+  settlementId,
+  type ChainVerifier,
+  type RefundRequest,
+  type SettlementRef,
+  type SettlementRequest,
+  type SettlementStrategy,
+  type SettlementSubmitter,
 } from "./ports";
 import {
   anchorTerminalStatus,
@@ -160,6 +162,8 @@ export interface RunResult {
   readonly state: CorridorState;
   readonly transactionId?: string;
   readonly stellarTxHash?: string;
+  readonly settlementKind?: "stellar" | "adapter";
+  readonly settlementRef?: SettlementRef;
   /** Ordered list of states the run passed through — useful for the example/CLI. */
   readonly trail: readonly CorridorState[];
 }
@@ -442,7 +446,7 @@ export async function execute(
   });
   const { advance, die, finishFailure } = context;
 
-  const strategies = deps.strategies ?? defaultStrategies(deps.submitter);
+  const strategies = deps.strategies ?? defaultStrategies(deps.submitter, adapter);
   const caps = adapter.capabilities();
   const compat = checkCompatibility(corridor, caps, strategies);
   if (!compat.ok) {
@@ -668,9 +672,10 @@ export async function execute(
       if (!t.ok) return die(t.error);
     }
 
-    const strategies = deps.strategies ?? defaultStrategies(deps.submitter);
+    const strategies = deps.strategies ?? defaultStrategies(deps.submitter, adapter);
     let s: Outcome<SettlementRef>;
-    if (deps.submitter.findExisting) {
+    const instructionsKind = opened.value.instructions?.kind ?? "stellar_payment";
+    if (deps.submitter.findExisting && instructionsKind === "stellar_payment") {
       const req = buildSettlementRequest(opened.value, q.value, corridor);
       const existing = await timed("findExisting", () => deps.submitter.findExisting!(req));
       if (!existing.ok) {
@@ -679,10 +684,14 @@ export async function execute(
       if (existing.value) {
         s = ok(existing.value);
       } else {
-        s = await timed("settle", () => settle(strategies, opened.value, q.value, corridor));
+        s = await timed("settle", () =>
+          settle(strategies, opened.value, q.value, corridor, adapter),
+        );
       }
     } else {
-      s = await timed("settle", () => settle(strategies, opened.value, q.value, corridor));
+      s = await timed("settle", () =>
+        settle(strategies, opened.value, q.value, corridor, adapter),
+      );
     }
     if (!s.ok) {
       const action = recover(corridor, s.error.retryable, attempt);
@@ -698,7 +707,11 @@ export async function execute(
       }
       return finishFailure(s.error);
     }
-    run.stellarTxHash = s.value.stellarTxHash;
+    run.settlementKind = s.value.kind;
+    run.settlementRef = s.value;
+    if (s.value.kind === "stellar") {
+      run.stellarTxHash = s.value.stellarTxHash;
+    }
     const settleReq = settlementRequestFor(opened.value, q.value, corridor);
     run.settlement = {
       to: settleReq.to,
@@ -709,14 +722,16 @@ export async function execute(
     {
       const t = await advance("settled", {
         quoteFee: q.value.fee,
-        networkFee: s.value.feeCharged,
+        networkFee: s.value.kind === "stellar" ? s.value.feeCharged : undefined,
       });
       if (!t.ok) return die(t.error);
     }
 
     // Verify our own payment on-chain before trusting the anchor's word on it.
-    const v = await timed("verify", () => verifyOnChain(deps, s.value, settleReq));
-    if (!v.ok) return finishFailure(v.error);
+    if (s.value.kind === "stellar") {
+      const v = await timed("verify", () => verifyOnChain(deps, s.value, settleReq));
+      if (!v.ok) return finishFailure(v.error);
+    }
 
     // Poll until the anchor confirms payout or we hit the corridor timeout.
     // reconcileUntil returns a non-retryable error, so we never re-settle here.
@@ -792,13 +807,13 @@ function settlementRequestFor(
   };
 }
 
-/** Run the optional chain verifier; a no-op success when none is configured. */
+/** Run the optional chain verifier; a no-op success when none is configured or settlement is non-stellar. */
 async function verifyOnChain(
   deps: EngineDeps,
   ref: SettlementRef,
   req: SettlementRequest,
 ): Promise<Outcome<void>> {
-  if (!deps.chainVerifier) return ok(undefined);
+  if (!deps.chainVerifier || ref.kind !== "stellar") return ok(undefined);
   const r = await deps.chainVerifier(ref, req);
   if (r.ok) return r;
   // Never retry: the payment is already on the chain, resubmitting would double it.
@@ -927,7 +942,7 @@ function createRunContext(init: RunContextInit): RunContext {
     // Money moved and the anchor itself reports a terminal failure: it is
     // already refunding (SEP-31 `refunds`), so we wait for its report instead of
     // asking the chain to reverse a payment it cannot reverse.
-    if (run.stellarTxHash && run.transactionId && anchorTerminalStatus(error)) {
+    if (hasSettlementRef(run) && run.transactionId && anchorTerminalStatus(error)) {
       run.lastError = `${error.code}: ${error.message}`;
       const pending = await advance("refund_pending");
       if (!pending.ok) return die(pending.error);
@@ -975,8 +990,12 @@ function createRunContext(init: RunContextInit): RunContext {
           error,
         );
       }
+      const originalRef: SettlementRef =
+        run.settlementRef?.kind === "stellar"
+          ? run.settlementRef
+          : { kind: "stellar", stellarTxHash: run.stellarTxHash };
       const req: RefundRequest = {
-        original: { stellarTxHash: run.stellarTxHash },
+        original: originalRef,
         amount: {
           asset: corridor.settlement.bridge_asset,
           amount: run.settlementAmount,
@@ -993,7 +1012,7 @@ function createRunContext(init: RunContextInit): RunContext {
       // Recorded before the state advance that persists it, so the very next
       // write carries the id. Set once and never rewritten — see the coalesce
       // in PostgresIdempotencyStore.put.
-      run.refundId = refund.value.stellarTxHash;
+      run.refundId = settlementId(refund.value);
     }
     run.lastError = `${error.code}: ${error.message}`;
     const refunded = await advance("refunded");
@@ -1019,6 +1038,8 @@ function toResult(run: StoredRun, trail: readonly CorridorState[]): RunResult {
     state: run.state,
     transactionId: run.transactionId,
     stellarTxHash: run.stellarTxHash,
+    settlementKind: run.settlementKind,
+    settlementRef: run.settlementRef,
     trail,
   };
 }
@@ -1288,33 +1309,44 @@ async function resumeRun(
       if (!submitted.ok) return context.finishFailure(submitted.error);
       ref = submitted.value;
     }
-    run.stellarTxHash = ref.stellarTxHash;
+    run.settlementKind = ref.kind;
+    run.settlementRef = ref;
+    if (ref.kind === "stellar") {
+      run.stellarTxHash = ref.stellarTxHash;
+    }
     run.settlement = {
       to: request.to,
       memo: request.memo,
       memoType: request.memoType,
       amount: request.amount,
     };
-    const settled = await context.advance("settled", { networkFee: ref.feeCharged });
+    const settled = await context.advance("settled", {
+      networkFee: ref.kind === "stellar" ? ref.feeCharged : undefined,
+    });
     if (!settled.ok) return context.die(settled.error);
   }
 
   if (run.state === "settled") {
     if (!run.transactionId) return conflict("settled run has no transactionId");
-    if (deps.chainVerifier) {
+    if (!hasSettlementRef(run)) return conflict("settled run has no settlement reference");
+    if (
+      deps.chainVerifier &&
+      (run.settlementKind === "stellar" || (!run.settlementKind && run.stellarTxHash))
+    ) {
       const saved = run.settlement;
-      if (!saved || !run.stellarTxHash) {
+      const ref =
+        run.settlementRef ??
+        (run.stellarTxHash
+          ? { kind: "stellar" as const, stellarTxHash: run.stellarTxHash }
+          : undefined);
+      if (!saved || !ref || ref.kind !== "stellar") {
         // Written before the request was recorded: nothing to compare against.
         (deps.logger ?? silentLogger).log("warn", "corridor.verify.skipped", {
           idempotencyKey: run.idempotencyKey,
           reason: "run has no recorded settlement request",
         });
       } else {
-        const v = await verifyOnChain(
-          deps,
-          { stellarTxHash: run.stellarTxHash },
-          { ...saved, corridor },
-        );
+        const v = await verifyOnChain(deps, ref, { ...saved, corridor });
         if (!v.ok) {
           // Money moved and the chain disagrees: park for a human, do not fail.
           const held = await context.holdAndStop(v.error);
