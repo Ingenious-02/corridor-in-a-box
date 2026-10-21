@@ -222,7 +222,9 @@ describe("StellarSettlementSubmitter.submit — ambiguous failure safety", () =>
 
     const r = await sub.submit(testRequest());
     expect(r.ok).toBe(true);
-    if (r.ok && r.value.kind === "stellar") expect(r.value.ledger).toBe(4_242);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("stellar");
+    if (r.value.kind === "stellar") expect(r.value.ledger).toBe(4_242);
     // Exactly one on-chain submission attempt — the fix must never resubmit
     // to resolve the ambiguity, only look the original tx up by hash.
     expect(server.submitTransaction).toHaveBeenCalledTimes(1);
@@ -451,12 +453,14 @@ describe("StellarClaimableBalanceStrategy", () => {
 
     const res = await strat.submit(req);
     expect(res.ok).toBe(true);
-    if (!res.ok || res.value.kind !== "stellar") return;
-
-    expect(res.value.ledger).toBe(500);
-    expect(res.value.claimableBalanceId).toBeDefined();
-    expect(typeof res.value.claimableBalanceId).toBe("string");
-    expect(res.value.claimableBalanceId?.length).toBe(72);
+    if (!res.ok) return;
+    expect(res.value.kind).toBe("stellar");
+    if (res.value.kind === "stellar") {
+      expect(res.value.ledger).toBe(500);
+      expect(res.value.claimableBalanceId).toBeDefined();
+      expect(typeof res.value.claimableBalanceId).toBe("string");
+      expect(res.value.claimableBalanceId?.length).toBe(72);
+    }
 
     expect(capturedTx).toBeDefined();
     if (capturedTx && "operations" in capturedTx) {
@@ -591,7 +595,9 @@ describe("StellarClaimableBalanceStrategy", () => {
 
     const r = await strat.submit(testRequest());
     expect(r.ok).toBe(true);
-    if (r.ok && r.value.kind === "stellar") {
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("stellar");
+    if (r.value.kind === "stellar") {
       expect(r.value.ledger).toBe(8_888);
       expect(r.value.claimableBalanceId).toBeDefined();
     }
@@ -1498,8 +1504,10 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok && res.value?.kind === "stellar") {
-      expect(res.value).toBeDefined();
+    if (!res.ok) return;
+    expect(res.value).toBeDefined();
+    expect(res.value?.kind).toBe("stellar");
+    if (res.value?.kind === "stellar") {
       expect(res.value.stellarTxHash).toBe("existing-tx-1");
       expect(res.value.ledger).toBe(500);
     }
@@ -1536,9 +1544,12 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok && res.value?.kind === "stellar") {
-      expect(res.value?.stellarTxHash).toBe("hash-tx-1");
-      expect(res.value?.ledger).toBe(600);
+    if (!res.ok) return;
+    expect(res.value).toBeDefined();
+    expect(res.value?.kind).toBe("stellar");
+    if (res.value?.kind === "stellar") {
+      expect(res.value.stellarTxHash).toBe("hash-tx-1");
+      expect(res.value.ledger).toBe(600);
     }
   });
 
@@ -1585,7 +1596,10 @@ describe("StellarSettlementSubmitter.findExisting", () => {
 
     const res = await sub.findExisting(req);
     expect(res.ok).toBe(true);
-    if (res.ok && res.value?.kind === "stellar") {
+    if (!res.ok) return;
+    expect(res.value).toBeDefined();
+    expect(res.value?.kind).toBe("stellar");
+    if (res.value?.kind === "stellar") {
       expect(res.value.stellarTxHash).toBe("xlm-tx-1");
     }
   });

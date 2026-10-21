@@ -186,7 +186,10 @@ export class StellarPaymentStrategy implements SettlementStrategy {
 
 /**
  * SettlementStrategy for off-chain / adapter-settled transactions (#186).
- * Dispatches to `adapter.confirmSettlement(transactionId)`.
+ * Dispatches to `adapter.confirmSettlement(transactionId)` when implemented.
+ * When the adapter does not implement `confirmSettlement`, accepts pre-declared
+ * `instructions.reference` on `adapter_settled` deposit instructions as proof of
+ * settlement (for anchors where the opened transaction itself confirms pre-funding).
  */
 export class AdapterSettledStrategy implements SettlementStrategy {
   readonly kind: DepositInstructionsKind = "adapter_settled";

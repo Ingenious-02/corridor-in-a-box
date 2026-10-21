@@ -605,8 +605,11 @@ describe("engine crash resume states", () => {
         amount: { asset: "USDC", amount: "100.00" },
         corridor: corridor(),
       });
-      if (!existingPayment.ok || existingPayment.value.kind !== "stellar")
-        throw new Error("mock settlement did not succeed");
+      expect(existingPayment.ok).toBe(true);
+      if (!existingPayment.ok) throw new Error("mock settlement did not succeed");
+      expect(existingPayment.value.kind).toBe("stellar");
+      if (existingPayment.value.kind !== "stellar")
+        throw new Error("expected stellar settlement");
       await store.put({ ...resumableRun(state, key), stellarTxHash: undefined });
       const r = await execute(intent(key), corridor(), {
         ...deps(),
@@ -2928,5 +2931,82 @@ describe("adapter-reported (off-chain) settlement (#186)", () => {
       reference: "otc_ref_existing",
       reportedAt: 1600000000000,
     });
+  });
+
+  it("failure after an adapter settlement ends in held, not refunded", async () => {
+    let t = 0;
+    const adapter = createMockAdapter({
+      settled: false,
+      instructions: { kind: "adapter_settled", reference: "otc_ref_fail" },
+      confirmSettlementResult: ok({
+        kind: "adapter",
+        reference: "otc_ref_fail",
+        reportedAt: 1700000000000,
+      }),
+    });
+    let submitCalled = false;
+    let refundCalled = false;
+    const submitter: SettlementSubmitter = {
+      async submit() {
+        submitCalled = true;
+        return fail("SETTLEMENT_FAILED", "unexpected submit", { retryable: false });
+      },
+      async refund() {
+        refundCalled = true;
+        return fail("SETTLEMENT_FAILED", "unexpected refund", { retryable: false });
+      },
+    };
+    const store = new InMemoryIdempotencyStore();
+    const audit = new InMemoryAuditLog();
+    const key = "adapter-settled-timeout";
+
+    const d: EngineDeps = {
+      resolver: new StaticRouteResolver(() => adapter, {
+        trustManifestWithoutAttestation: true,
+      }),
+      submitter,
+      idempotency: store,
+      audit,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+      reconcilePollMs: 500,
+      trustManifestWithoutAttestation: true,
+      unsafeSkipPreSettleGate: true,
+    };
+
+    const r = await execute(
+      intent(key),
+      corridorWith({ max_retries: 0, timeout_seconds: 1, rollback: "refund_sender" }),
+      d,
+    );
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("REFUND_UNSUPPORTED");
+    }
+
+    const persisted = await store.get(key);
+    expect(persisted?.state).toBe("held");
+    expect(persisted?.state).not.toBe("refunded");
+    expect(persisted?.settlementKind).toBe("adapter");
+    expect(persisted?.settlementRef).toEqual({
+      kind: "adapter",
+      reference: "otc_ref_fail",
+      reportedAt: expect.any(Number),
+    });
+    expect(persisted?.lastError).toContain("REFUND_UNSUPPORTED");
+
+    // The audit trail confirms we stepped into recovering, then held (not refunded)
+    const trail = audit.entries.map((e) => e.to);
+    expect(trail).toContain("settled");
+    expect(trail).toContain("recovering");
+    expect(trail).toContain("held");
+    expect(trail).not.toContain("refunded");
+
+    // No submitter calls were made
+    expect(submitCalled).toBe(false);
+    expect(refundCalled).toBe(false);
   });
 });

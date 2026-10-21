@@ -974,45 +974,61 @@ function createRunContext(init: RunContextInit): RunContext {
     // Only reverse the chain if a payment actually went out. If settlement never
     // succeeded, there is nothing on-chain to undo — the sending anchor returns
     // the sender's funds off-chain — so we just record the refunded state.
+    // If settlement was off-chain (adapter-reported), it cannot be reversed on-chain
+    // by the submitter: escalate to a manual hold rather than falsely claiming refunded.
     // A refund already requested for this run is not requested again. The
     // stored id is the only evidence a resumed process has that it already
     // asked: without this check a crash between the refund and the next write
     // would send the money back twice.
-    if (run.stellarTxHash && !hasRequestedRefund(run)) {
-      if (!run.settlementAmount) {
+    if (hasSettlementRef(run)) {
+      if (run.settlementKind === "adapter" || run.settlementRef?.kind === "adapter") {
         return holdAndStop(
           {
-            code: "SETTLEMENT_FAILED",
-            message: "cannot refund: stored settlement amount is missing",
+            code: "REFUND_UNSUPPORTED",
+            message:
+              "adapter-reported settlement cannot be reversed on-chain; operator review needed",
             retryable: false,
           },
           undefined,
           error,
         );
       }
-      const originalRef: SettlementRef =
-        run.settlementRef?.kind === "stellar"
-          ? run.settlementRef
-          : { kind: "stellar", stellarTxHash: run.stellarTxHash };
-      const req: RefundRequest = {
-        original: originalRef,
-        amount: {
-          asset: corridor.settlement.bridge_asset,
-          amount: run.settlementAmount,
-        },
-        corridor,
-        reason: `${error.code}: ${error.message}`,
-      };
-      const refund = await deps.submitter.refund(req);
-      // Couldn't reverse the chain payment — escalate to a manual hold.
-      // `error`, not `refund.error`, is what the breaker judges: the refund port
-      // refusing is a design invariant, while `error` is the reconcile/settlement
-      // outage that put us here.
-      if (!refund.ok) return holdAndStop(refund.error, undefined, error);
-      // Recorded before the state advance that persists it, so the very next
-      // write carries the id. Set once and never rewritten — see the coalesce
-      // in PostgresIdempotencyStore.put.
-      run.refundId = settlementId(refund.value);
+      if (!hasRequestedRefund(run)) {
+        if (!run.settlementAmount) {
+          return holdAndStop(
+            {
+              code: "SETTLEMENT_FAILED",
+              message: "cannot refund: stored settlement amount is missing",
+              retryable: false,
+            },
+            undefined,
+            error,
+          );
+        }
+        const originalRef: SettlementRef =
+          run.settlementRef?.kind === "stellar"
+            ? run.settlementRef
+            : { kind: "stellar", stellarTxHash: run.stellarTxHash! };
+        const req: RefundRequest = {
+          original: originalRef,
+          amount: {
+            asset: corridor.settlement.bridge_asset,
+            amount: run.settlementAmount,
+          },
+          corridor,
+          reason: `${error.code}: ${error.message}`,
+        };
+        const refund = await deps.submitter.refund(req);
+        // Couldn't reverse the chain payment — escalate to a manual hold.
+        // `error`, not `refund.error`, is what the breaker judges: the refund port
+        // refusing is a design invariant, while `error` is the reconcile/settlement
+        // outage that put us here.
+        if (!refund.ok) return holdAndStop(refund.error, undefined, error);
+        // Recorded before the state advance that persists it, so the very next
+        // write carries the id. Set once and never rewritten — see the coalesce
+        // in PostgresIdempotencyStore.put.
+        run.refundId = settlementId(refund.value);
+      }
     }
     run.lastError = `${error.code}: ${error.message}`;
     const refunded = await advance("refunded");
